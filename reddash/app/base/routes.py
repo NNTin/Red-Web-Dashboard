@@ -7,7 +7,6 @@ from copy import deepcopy
 import wtforms
 from babel import Locale as BabelLocale
 from babel import UnknownLocaleError
-from django.utils.http import url_has_allowed_host_and_scheme
 from flask import (
     abort,
     flash,
@@ -27,7 +26,7 @@ from flask_wtf.file import FileField
 from markupsafe import Markup
 
 from reddash.app.app import app
-from reddash.app.utils import AVAILABLE_COLORS, User, get_result, humanize_timedelta
+from reddash.app.utils import AVAILABLE_COLORS, User, get_result, humanize_timedelta, is_safe_redirect_url
 
 from . import blueprint
 
@@ -197,8 +196,7 @@ async def dashboard():
     redirecting_to: str = (
         request.args.get("next") if not app.config["USE_SESSION_FOR_NEXT"] else session.get("next")
     ) or url_for("base_blueprint.dashboard_guild", guild_id="GUILD_ID")
-    # `url_has_allowed_host_and_scheme` should check if the url is safe for redirects, meaning it matches the request host.
-    if not url_has_allowed_host_and_scheme(redirecting_to, request.host):
+    if not is_safe_redirect_url(redirecting_to, request.host):
         return abort(400)
 
     return render_template(
