@@ -7,13 +7,12 @@ import random
 import string
 
 import aiohttp
-from django.utils.http import url_has_allowed_host_and_scheme
 from flask import abort, flash, redirect, render_template, request, session, url_for
 from flask_babel import _
 from flask_login import current_user, login_fresh, login_user, logout_user
 
 from reddash.app.app import app
-from reddash.app.utils import User
+from reddash.app.utils import User, is_safe_redirect_url
 
 from . import blueprint
 
@@ -29,8 +28,7 @@ async def login():
             if not app.config["USE_SESSION_FOR_NEXT"]
             else session.get("next")
         ) or url_for("base_blueprint.index")
-        # `url_has_allowed_host_and_scheme`` should check if the url is safe for redirects, meaning it matches the request host.
-        if not url_has_allowed_host_and_scheme(redirecting_to, request.host):
+        if not is_safe_redirect_url(redirecting_to, request.host):
             return abort(400)
         return redirect(redirecting_to)
     if app.data["core"]["secret"] is None:
@@ -65,8 +63,7 @@ async def callback():
     redirecting_to: str = (request.args.get("next") or session.get("next")) or url_for(
         "base_blueprint.index",
     )
-    # `url_has_allowed_host_and_scheme` should check if the url is safe for redirects, meaning it matches the request host.
-    if not url_has_allowed_host_and_scheme(redirecting_to, request.host):
+    if not is_safe_redirect_url(redirecting_to, request.host):
         return abort(400)
     if current_user.is_authenticated:
         return redirect(redirecting_to)
