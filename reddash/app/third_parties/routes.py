@@ -6,6 +6,7 @@ from flask import (
     flash,
     g,
     jsonify,
+    make_response,
     redirect,
     render_template,
     render_template_string,
@@ -27,6 +28,75 @@ from reddash.app.utils import get_result, is_safe_redirect_url  # , get_user_id
 from . import blueprint
 
 # <---------- Third Parties ---------->
+
+
+def _resolve_third_party_name(name: str) -> str | None:
+    third_parties = app.variables["third_parties"]
+    name = name.strip()
+    if name in third_parties:
+        return name
+    return next((key for key in third_parties if key.lower() == name.lower()), None)
+
+
+def _build_raw_response(raw_response):
+    try:
+        body = base64.b64decode(raw_response["body_base64"])
+    except Exception:
+        return abort(500, description=_("Invalid raw third-party response."))
+
+    response = make_response(body, raw_response.get("status", 200))
+    response.headers["Content-Type"] = raw_response.get(
+        "content_type",
+        "application/octet-stream",
+    )
+    for header, value in raw_response.get("headers", {}).items():
+        response.headers[str(header)] = str(value)
+    return response
+
+
+async def _call_third_party_page(
+    *,
+    method: str,
+    name: str,
+    page: str | None,
+    context_ids=None,
+    required_kwargs=None,
+    optional_kwargs=None,
+    extra_kwargs=None,
+    data=None,
+):
+    if context_ids is None:
+        context_ids = {}
+    if required_kwargs is None:
+        required_kwargs = {}
+    if optional_kwargs is None:
+        optional_kwargs = {}
+    if extra_kwargs is None:
+        extra_kwargs = {}
+    if data is None:
+        data = {"form": {}, "json": {}}
+
+    generate_csrf()
+    requeststr = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "DASHBOARDRPC_THIRDPARTIES__DATA_RECEIVE",
+        "params": [
+            method,
+            name,
+            page,
+            request.url,
+            (session["csrf_token"], g.csrf_token),
+            base64.urlsafe_b64encode(app.config["WTF_CSRF_SECRET_KEY"]).decode(),
+            context_ids,
+            required_kwargs,
+            optional_kwargs,
+            extra_kwargs,
+            data,
+            app.extensions["babel"].locale_selector(),
+        ],
+    }
+    return await get_result(app, requeststr)
 
 
 @app.csrf_protect.exempt
@@ -88,6 +158,41 @@ async def third_parties(third_party: str = None):
         if third_party is None or third_party not in return_third_parties["third_parties"]
         else third_party,
     )
+
+
+@blueprint.route("/third-party/<name>/static/<path:asset_path>", methods=("GET", "HEAD"))
+async def third_party_static(name: str, asset_path: str):
+    third_parties = app.variables["third_parties"]
+    name = _resolve_third_party_name(name)
+    if name is None:
+        return abort(404, description=_("Looks like that third party doesn't exist... Strange..."))
+    if name in app.data["disabled_third_parties"]:
+        return abort(403, description=_("This third party is disabled."))
+    if "static" not in third_parties[name]:
+        return abort(404, description=_("Looks like that page doesn't exist... Strange..."))
+    if request.method not in third_parties[name]["static"]["methods"]:
+        return abort(405, description=_("Method not allowed."))
+
+    try:
+        result = await _call_third_party_page(
+            method=request.method,
+            name=name,
+            page="static",
+            required_kwargs={"asset_path": asset_path},
+        )
+        if "raw_response" in result:
+            return _build_raw_response(result["raw_response"])
+        if "error_code" in result:
+            return abort(result["error_code"], description=result.get("error_message"))
+        return abort(500, description=_("Invalid raw third-party response."))
+    except HTTPException:
+        raise
+    except Exception as e:
+        app.logger.error(
+            f"Error in static asset `{asset_path}` of third party `{name}`.",
+            exc_info=e,
+        )
+        return abort(500, description=_("An error occurred while processing your request."))
 
 
 @blueprint.route(
@@ -158,13 +263,11 @@ async def third_parties(third_party: str = None):
 )
 async def third_party(name: str, page: str = None, guild_id: str = None):
     third_parties = app.variables["third_parties"]
-    name = name.strip()
-    if name not in third_parties:
-        name = next((key for key in third_parties if key.lower() == name.lower()), None)
-        if name is None:
-            return abort(
-                404, description=_("Looks like that third party doesn't exist... Strange..."),
-            )
+    name = _resolve_third_party_name(name)
+    if name is None:
+        return abort(
+            404, description=_("Looks like that third party doesn't exist... Strange..."),
+        )
     if name in app.data["disabled_third_parties"]:
         return abort(403, description=_("This third party is disabled."))
     if page is not None:
@@ -240,28 +343,19 @@ async def third_party(name: str, page: str = None, guild_id: str = None):
     )
 
     try:
-        generate_csrf()
-        requeststr = {
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": "DASHBOARDRPC_THIRDPARTIES__DATA_RECEIVE",
-            "params": [
-                request.method,
-                name,
-                page,
-                request.url,
-                (session["csrf_token"], g.csrf_token),
-                base64.urlsafe_b64encode(app.config["WTF_CSRF_SECRET_KEY"]).decode(),
-                context_ids,
-                required_kwargs,
-                optional_kwargs,
-                extra_kwargs,
-                data,
-                app.extensions["babel"].locale_selector(),
-            ],
-        }
-        result = await get_result(app, requeststr)
+        result = await _call_third_party_page(
+            method=request.method,
+            name=name,
+            page=page,
+            context_ids=context_ids,
+            required_kwargs=required_kwargs,
+            optional_kwargs=optional_kwargs,
+            extra_kwargs=extra_kwargs,
+            data=data,
+        )
 
+        if "raw_response" in result:
+            return _build_raw_response(result["raw_response"])
         if "data" in result:
             return result["data"]
         if "notifications" in result:
