@@ -1,6 +1,7 @@
 
 import base64
 
+from django.utils.http import url_has_allowed_host_and_scheme
 from flask import (
     abort,
     flash,
@@ -23,7 +24,7 @@ from werkzeug.exceptions import HTTPException
 from reddash.app.app import app
 from reddash.app.base.routes import get_guild, get_third_parties
 from reddash.app.pagination import Pagination
-from reddash.app.utils import get_result, is_safe_redirect_url  # , get_user_id
+from reddash.app.utils import get_result  # , get_user_id
 
 from . import blueprint
 
@@ -399,7 +400,8 @@ async def third_party(name: str, page: str = None, guild_id: str = None):
                 error_message=result.get("error_message"),
             )
         if "redirect_url" in result:
-            if not is_safe_redirect_url(result["redirect_url"], request.host):
+            # `url_has_allowed_host_and_scheme`` should check if the url is safe for redirects, meaning it matches the request host.
+            if not url_has_allowed_host_and_scheme(result["redirect_url"], request.host):
                 return abort(400)
             return redirect(result["redirect_url"])
         return result

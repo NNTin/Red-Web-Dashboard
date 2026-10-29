@@ -35,23 +35,6 @@ from wtforms import Field, FormField, SelectFieldBase
 settings.configure()
 from django_user_agents.utils import get_user_agent
 
-def is_safe_redirect_url(url: str | None, host: str) -> bool:
-    """Stricter redirect URL check that rejects backslash-prefixed URLs.
-
-    Django's url_has_allowed_host_and_scheme converts backslashes to forward
-    slashes before checking, so '\evil.com' is treated as '/evil.com' (safe).
-    However browsers interpret 'Location: \evil.com' as '//evil.com', enabling
-    an open redirect to an external site.
-    """
-    if url is None:
-        return False
-    stripped = url.lstrip()
-    if stripped.startswith("\\"):
-        return False
-    from django.utils.http import url_has_allowed_host_and_scheme
-    return url_has_allowed_host_and_scheme(url, host)
-
-
 AVAILABLE_COLORS: list[str] = [
     "success",
     "warning",
