@@ -3,8 +3,7 @@ The base of the login process has been done by Neuro Assassin (https://github.co
 """
 
 import datetime
-import random
-import string
+import secrets
 
 import aiohttp
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -13,7 +12,7 @@ from flask_babel import _
 from flask_login import current_user, login_fresh, login_user, logout_user
 
 from reddash.app.app import app
-from reddash.app.utils import User
+from reddash.app.utils import User, get_remote_addr
 
 from . import blueprint
 
@@ -52,7 +51,7 @@ async def discord_oauth():
             if app.host in ("0.0.0.0", "127.0.0.1")
             else f"http://{app.host}/callback"
         )
-    state = "".join(random.choice(string.ascii_uppercase + string.digits) for _ in range(15))
+    state = secrets.token_urlsafe(16)
     session["state"] = state
     session["next"] = request.args.get("next")
     return redirect(
@@ -180,7 +179,7 @@ async def logout():
 
 @blueprint.route("/blacklisted")
 async def blacklisted():
-    remote_addr = request.environ.get("HTTP_X_FORWARDED_FOR", request.remote_addr)
+    remote_addr = get_remote_addr()
     if remote_addr not in app.data["core"]["blacklisted_ips"]:
         return redirect(url_for("base_blueprint.index"))
     return render_template("errors/blacklisted.html")

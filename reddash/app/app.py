@@ -11,7 +11,9 @@ import datetime
 import logging
 import sys
 import threading
+import time
 
+import jwt
 from flask import Flask
 from flask_babel import Babel
 from waitress import serve
@@ -45,6 +47,29 @@ class Lock:
 
     def __exit__(self, *args) -> None:
         self.lock.release()
+
+
+class UsedTokens:
+    """Already used JWT tokens. Expired ones are forgotten, as they would be rejected anyway."""
+
+    def __init__(self) -> None:
+        self.tokens: dict[str, float] = {}
+
+    def __contains__(self, token: str) -> bool:
+        return token in self.tokens
+
+    def add(self, token: str) -> None:
+        now = time.time()
+        self.tokens = {
+            used_token: expiration
+            for used_token, expiration in self.tokens.items()
+            if expiration > now
+        }
+        try:
+            expiration = jwt.decode(token, options={"verify_signature": False}).get("exp")
+        except jwt.InvalidTokenError:
+            expiration = None
+        self.tokens[token] = float(expiration) if expiration is not None else float("inf")
 
 
 class ServerThread(threading.Thread):
@@ -100,7 +125,7 @@ class FlaskApp(Flask):
         self.logger: logging.Logger = logging.getLogger("reddash")
         self.logger.setLevel(logging.DEBUG)
 
-        self.already_used_tokens: set[str] = set()
+        self.already_used_tokens: UsedTokens = UsedTokens()
 
         self.locked: bool = False
 

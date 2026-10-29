@@ -2,6 +2,7 @@ import typing  # isort:skip
 
 import base64
 import datetime
+import ipaddress
 import json
 import os
 import time
@@ -55,6 +56,70 @@ WS_EXCEPTIONS = (
     BrokenPipeError,
     AttributeError,  # If the connection is reset.
 )
+
+# Tags and attributes Markdown can produce. Everything else is stripped from the rendered HTML.
+MARKDOWN_ALLOWED_TAGS: frozenset[str] = frozenset(
+    {
+        "a",
+        "abbr",
+        "b",
+        "blockquote",
+        "br",
+        "code",
+        "del",
+        "em",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "i",
+        "img",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "s",
+        "strong",
+        "sub",
+        "sup",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    },
+)
+MARKDOWN_ALLOWED_ATTRIBUTES: dict[str, list[str]] = {
+    "a": ["href", "title"],
+    "abbr": ["title"],
+    "code": ["class"],
+    "img": ["src", "alt", "title"],
+    "td": ["align"],
+    "th": ["align"],
+}
+MARKDOWN_ALLOWED_PROTOCOLS: frozenset[str] = frozenset({"http", "https", "mailto"})
+
+
+def is_ip(address: str | None, *properties: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(getattr(ip, property) for property in properties)
+
+
+def get_remote_addr() -> str | None:
+    # `X-Forwarded-For` can be set by anyone, so it's only trusted when the request comes from a reverse proxy running on the same machine. The last entry is the one added by that proxy.
+    remote_addr = request.remote_addr
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for and is_ip(remote_addr, "is_loopback"):
+        return forwarded_for.split(",")[-1].strip()
+    return remote_addr
 
 
 class User(UserMixin):
@@ -116,7 +181,7 @@ class User(UserMixin):
         expiration_timedelta: datetime.timedelta = datetime.timedelta(minutes=15),
         data: dict[str, typing.Any] = {},
     ) -> str:
-        secret_key = app.config["SECRET_KEY"]
+        secret_key = app.jwt_secret_key
         expiration_time = datetime.datetime.now(tz=datetime.UTC) + expiration_timedelta
         payload = {
             "user_id": self.id,
@@ -134,7 +199,7 @@ class User(UserMixin):
         unique: bool = True,
         return_data: bool = False,
     ) -> typing.Union["User", tuple["User", dict[str, typing.Any]]]:
-        secret_key = app.config["SECRET_KEY"]
+        secret_key = app.jwt_secret_key
         try:
             data = jwt.decode(token, secret_key, algorithms=["HS256"])
         except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
@@ -181,7 +246,7 @@ def register_extensions(_app: Flask) -> None:
         except jwt.ExpiredSignatureError:
             return None
         except jwt.InvalidTokenError:
-            remote_addr = request.environ.get("HTTP_X_FORWARDED_FOR", request.remote_addr)
+            remote_addr = get_remote_addr()
             if remote_addr in app.data["core"]["blacklisted_ips"]:
                 return None
             # app.data["core"]["blacklisted_ips"].append(remote_addr)
@@ -195,14 +260,7 @@ def register_extensions(_app: Flask) -> None:
     old_force_https = app.talisman._force_https
 
     def _force_https():
-        if request.remote_addr in ("127.0.0.1", "::1"):
-            return None
-        private_ip_ranges = [
-            ("10.0.0.0", "10.255.255.255"),
-            ("172.16.0.0", "172.31.255.255"),
-            ("192.168.0.0", "192.168.255.255"),
-        ]
-        if any(start <= request.remote_addr <= end for start, end in private_ip_ranges):
+        if is_ip(request.remote_addr, "is_loopback", "is_private"):
             return None
         return old_force_https()
 
@@ -212,7 +270,8 @@ def register_extensions(_app: Flask) -> None:
         app,
         force_https=not allow_unsecure_http_requests,
         session_cookie_secure=not allow_unsecure_http_requests,
-        content_security_policy=None,
+        # Scripts aren't restricted, as pages rely on inline scripts and third parties provide their own.
+        content_security_policy={"object-src": "'none'", "base-uri": "'self'"},
     )
 
     app.config["WTF_CSRF_ENABLED"]: bool = True
@@ -290,7 +349,17 @@ def register_extensions(_app: Flask) -> None:
     @app.template_filter("markdown")
     def markdown_filter(text: str) -> Markup:
         text = bleach.clean(text, tags=[], strip=False)
-        return Markup(app.markdown.convert(text).replace("\n", ""))  # <br />
+        html = app.markdown.convert(text).replace("\n", "")  # <br />
+        # Markdown doesn't filter link targets, so `[x](javascript:...)` must be removed here.
+        return Markup(
+            bleach.clean(
+                html,
+                tags=MARKDOWN_ALLOWED_TAGS,
+                attributes=MARKDOWN_ALLOWED_ATTRIBUTES,
+                protocols=MARKDOWN_ALLOWED_PROTOCOLS,
+                strip=True,
+            ),
+        )
 
     @app.template_filter("highlight")
     def highlight_filter(code, language="python") -> Markup:
@@ -334,7 +403,7 @@ def register_blueprints(app: Flask) -> None:
         request.user_agent = get_user_agent(request)
         # if request.path not in ("/", "/login") and not request.path.startswith("/static") and not (request.path.startswith("/set") and request.path.count("/") == 1):
         #     return render_template("errors/404.html"), 404
-        remote_addr = request.environ.get("HTTP_X_FORWARDED_FOR", request.remote_addr)
+        remote_addr = get_remote_addr()
         if request.path.startswith(("/static", "/api/stream", "/blacklisted")):
             return None
         if remote_addr in app.data["core"]["blacklisted_ips"]:

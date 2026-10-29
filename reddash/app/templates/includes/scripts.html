@@ -48,7 +48,8 @@
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
             {% for category, message in messages %}
-                toastr.{{ category }}("{{ message|replace('\n', ' ')|markdown|replace('<p>', '')|replace('</p>', '') }}");
+                {# `tojson` escapes the message for a JavaScript string, and the category is restricted to existing toastr methods. #}
+                toastr[{{ (category if category in ("success", "info", "warning", "danger", "error") else "info")|tojson }}]({{ message|replace('\n', ' ')|markdown|replace('<p>', '')|replace('</p>', '')|tojson }});
             {% endfor %}
         {% endif %}
     {% endwith %}
