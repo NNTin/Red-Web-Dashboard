@@ -91,7 +91,7 @@ async def _check_third_party_page_access(
                 None,
                 abort(401, description=_("You must be logged in to access this page.")),
             )
-    if page_data["is_owner"] and not current_user.is_owner:
+    if page_data["is_owner"] and not (current_user.is_authenticated and current_user.is_owner):
         return (
             None,
             None,
