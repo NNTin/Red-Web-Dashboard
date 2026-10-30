@@ -8,6 +8,7 @@ import os
 import time
 from copy import deepcopy
 from importlib import import_module
+from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse, urlunparse
 
 import bleach
@@ -16,11 +17,12 @@ import websocket
 from django.conf import settings
 from fernet import Fernet
 from flask import Flask, flash, g, redirect, render_template, request, session, url_for
+from flask.sessions import SecureCookieSessionInterface
 from flask_babel import Locale, _
 from flask_bootstrap import Bootstrap
 from flask_login import LoginManager, UserMixin, current_user
 from flask_login import login_url as make_login_url
-from flask_moment import Moment
+from flask_moment import Moment, default_moment_version
 from flask_sitemapper import Sitemapper
 from flask_talisman import Talisman
 from flask_wtf.csrf import CSRFProtect
@@ -105,6 +107,23 @@ MARKDOWN_ALLOWED_ATTRIBUTES: dict[str, list[str]] = {
 MARKDOWN_ALLOWED_PROTOCOLS: frozenset[str] = frozenset({"http", "https", "mailto"})
 
 
+# The locales of moment.js and flatpickr matching `app.config["LANGUAGES"]`, so that only the locale
+# of the page is loaded. moment.js uses the language, except for some regional locales.
+MOMENT_REGIONAL_LOCALES: frozenset[str] = frozenset({"ar-sa", "pt-br", "zh-cn", "zh-hk", "zh-tw"})
+# flatpickr uses the language, except for these ones (`None` if the locale doesn't exist).
+FLATPICKR_LOCALES: dict[str, str | None] = {
+    "en": None,
+    "af": None,
+    "ca": "cat",
+    "el": "gr",
+    "nb": "no",
+    "vi": "vn",
+    "zh-cn": "zh",
+    "zh-hk": "zh-tw",
+    "zh-tw": "zh-tw",
+}
+
+
 def is_ip(address: str | None, *properties: str) -> bool:
     try:
         ip = ipaddress.ip_address(address)
@@ -120,6 +139,19 @@ def get_remote_addr() -> str | None:
     if forwarded_for and is_ip(remote_addr, "is_loopback"):
         return forwarded_for.split(",")[-1].strip()
     return remote_addr
+
+
+def https_available() -> bool:
+    # The redirect URI is the public URL of the dashboard, so HTTPS is only available if it uses it (reverse proxy with a certificate).
+    core = app.data["core"]
+    return (core["redirect_uri"] or "").startswith("https://") and not core[
+        "allow_unsecure_http_requests"
+    ]
+
+
+class SessionInterface(SecureCookieSessionInterface):
+    def get_cookie_secure(self, app: Flask) -> bool:
+        return https_available()
 
 
 class User(UserMixin):
@@ -260,19 +292,21 @@ def register_extensions(_app: Flask) -> None:
     old_force_https = app.talisman._force_https
 
     def _force_https():
-        if is_ip(request.remote_addr, "is_loopback", "is_private"):
+        if not https_available():
+            return None
+        if is_ip(get_remote_addr(), "is_loopback", "is_private"):
             return None
         return old_force_https()
 
     app.talisman._force_https = _force_https
-    allow_unsecure_http_requests = app.data["core"]["allow_unsecure_http_requests"]
     app.talisman.init_app(
         app,
-        force_https=not allow_unsecure_http_requests,
-        session_cookie_secure=not allow_unsecure_http_requests,
+        force_https=True,  # The decision is made for each request in `_force_https`.
+        session_cookie_secure=False,  # Handled by `SessionInterface`.
         # Scripts aren't restricted, as pages rely on inline scripts and third parties provide their own.
         content_security_policy={"object-src": "'none'", "base-uri": "'self'"},
     )
+    app.session_interface = SessionInterface()
 
     app.config["WTF_CSRF_ENABLED"]: bool = True
     app.config["WTF_CSRF_SECRET_KEY"]: str = base64.urlsafe_b64decode(
@@ -439,7 +473,10 @@ def apply_themes(app: Flask) -> None:
                 theme_file = "{}/{}".format(themename, values.get("filename", ""))
                 if os.path.isfile(os.path.join(app.static_folder, theme_file)):
                     values["filename"] = theme_file
-            values["q"] = time.time()  # So Flask doesn't cache.
+            # The URL only changes with the file, so browsers can cache it until it's modified.
+            path = Path(app.static_folder) / values.get("filename", "")
+            if path.is_file():
+                values["q"] = int(path.stat().st_mtime)
         if request.args.get("debug_toolbar") in ("True", "true", "1", "t", "on"):
             values["debug_toolbar"] = "True"
         return url_for(endpoint, **values)
@@ -710,6 +747,19 @@ def initialize_babel(app: Flask) -> None:
         ).replace("-", "_")
 
     app.extensions["babel"].locale_selector = get_locale
+
+    @app.context_processor
+    def inject_locales() -> dict[str, str | None]:
+        language, __, territory = get_locale().lower().partition("_")
+        regional = f"{language}-{territory}"
+        return {
+            "moment_version": default_moment_version,
+            "moment_locale": regional if regional in MOMENT_REGIONAL_LOCALES else language,
+            "flatpickr_locale": FLATPICKR_LOCALES.get(
+                regional,
+                FLATPICKR_LOCALES.get(language, language),
+            ),
+        }
 
 
 def initialize_websocket(app: Flask) -> bool:
