@@ -67,11 +67,7 @@ async def _check_third_party_page_access(
     page: str | None = None,
     guild_id: str | None = None,
     login_redirect: bool = True,
-):
-    """Return `(context_ids, return_guild, early_response)`.
-
-    `early_response` must be returned to the client when it is set.
-    """
+) -> tuple[dict, dict]:
     page_data = app.variables["third_parties"][name][page_key]
     context_ids = {}
     if "user_id" in page_data["context_ids"]:
@@ -80,30 +76,16 @@ async def _check_third_party_page_access(
                 current_user.id
             )  # int(get_user_id(app=app, req=request, ses=session))
         elif login_redirect:
-            return (
-                None,
-                None,
-                redirect(make_login_url("login_blueprint.login", next_url=request.url)),
-            )
+            abort(redirect(make_login_url("login_blueprint.login", next_url=request.url)))
         else:
-            return (
-                None,
-                None,
-                abort(401, description=_("You must be logged in to access this page.")),
-            )
+            abort(401, description=_("You must be logged in to access this page."))
     if page_data["is_owner"] and not (current_user.is_authenticated and current_user.is_owner):
-        return (
-            None,
-            None,
-            abort(403, description=_("You must be the owner of the bot to access this page.")),
-        )
+        abort(403, description=_("You must be the owner of the bot to access this page."))
     if "guild_id" in page_data["context_ids"]:
         try:
             context_ids["guild_id"] = int(guild_id)
         except (TypeError, ValueError):
-            return (
-                None,
-                None,
+            abort(
                 redirect(
                     make_login_url(
                         "base_blueprint.dashboard",
@@ -119,10 +101,10 @@ async def _check_third_party_page_access(
             )
         return_guild = await get_guild(context_ids["guild_id"], for_third_parties=True)
         if return_guild["guild"]["status"] == 1:
-            return None, None, return_guild["guild"]
+            abort(jsonify(return_guild["guild"]))
     else:
         return_guild = {}
-    return context_ids, return_guild, None
+    return context_ids, return_guild
 
 
 def _build_raw_response(raw_response):
@@ -269,11 +251,9 @@ async def third_party_static(name: str, asset_path: str):
         return abort(404, description=_("Asset not found."))
     if "guild_id" in third_parties[name]["static"]["context_ids"]:
         return abort(400, description=_("Static pages cannot require a guild context."))
-    context_ids, _return_guild, early_response = await _check_third_party_page_access(
+    context_ids, _return_guild = await _check_third_party_page_access(
         name, "static", login_redirect=False,
     )
-    if early_response is not None:
-        return early_response
 
     try:
         result = await _call_third_party_page(
@@ -384,11 +364,9 @@ async def third_party(name: str, page: str = None, guild_id: str = None):
     if request.method not in third_parties[name][_page]["methods"]:
         return abort(405, description=_("Method not allowed."))
 
-    context_ids, return_guild, early_response = await _check_third_party_page_access(
+    context_ids, return_guild = await _check_third_party_page_access(
         name, _page, page=page, guild_id=guild_id,
     )
-    if early_response is not None:
-        return early_response
 
     kwargs = request.args.copy()
     required_kwargs = {}
