@@ -31,12 +31,98 @@ from . import blueprint
 # <---------- Third Parties ---------->
 
 
+_RAW_RESPONSE_ALLOWED_HEADERS = frozenset(
+    header.lower()
+    for header in (
+        "Cache-Control",
+        "ETag",
+        "Last-Modified",
+        "Expires",
+        "Vary",
+        "Content-Disposition",
+        "Content-Language",
+    )
+)
+
+
 def _resolve_third_party_name(name: str) -> str | None:
     third_parties = app.variables["third_parties"]
     name = name.strip()
     if name in third_parties:
         return name
     return next((key for key in third_parties if key.lower() == name.lower()), None)
+
+
+def _is_safe_asset_path(asset_path: str) -> bool:
+    # Werkzeug has already percent-decoded the path, so `%2e%2e` arrives here as `..`.
+    if not asset_path or "\\" in asset_path or "\x00" in asset_path or asset_path.startswith("/"):
+        return False
+    return all(part not in ("", ".", "..") for part in asset_path.split("/"))
+
+
+async def _check_third_party_page_access(
+    name: str,
+    page_key: str,
+    *,
+    page: str | None = None,
+    guild_id: str | None = None,
+    login_redirect: bool = True,
+):
+    """Return `(context_ids, return_guild, early_response)`.
+
+    `early_response` must be returned to the client when it is set.
+    """
+    page_data = app.variables["third_parties"][name][page_key]
+    context_ids = {}
+    if "user_id" in page_data["context_ids"]:
+        if current_user.is_authenticated:
+            context_ids["user_id"] = (
+                current_user.id
+            )  # int(get_user_id(app=app, req=request, ses=session))
+        elif login_redirect:
+            return (
+                None,
+                None,
+                redirect(make_login_url("login_blueprint.login", next_url=request.url)),
+            )
+        else:
+            return (
+                None,
+                None,
+                abort(401, description=_("You must be logged in to access this page.")),
+            )
+    if page_data["is_owner"] and not current_user.is_owner:
+        return (
+            None,
+            None,
+            abort(403, description=_("You must be the owner of the bot to access this page.")),
+        )
+    if "guild_id" in page_data["context_ids"]:
+        try:
+            context_ids["guild_id"] = int(guild_id)
+        except (TypeError, ValueError):
+            return (
+                None,
+                None,
+                redirect(
+                    make_login_url(
+                        "base_blueprint.dashboard",
+                        next_url=url_for(
+                            "third_parties_blueprint.third_party",
+                            name=name,
+                            page=page,
+                            guild_id="GUILD_ID",
+                            **request.args,
+                        ),
+                    ),
+                ),
+            )
+        return_guild = await get_guild(context_ids["guild_id"], for_third_parties=True)
+        if return_guild["guild"]["status"] == 1:
+            return None, None, return_guild["guild"]
+    else:
+        return_guild = {}
+    return context_ids, return_guild, None
 
 
 def _build_raw_response(raw_response):
@@ -51,7 +137,13 @@ def _build_raw_response(raw_response):
         "application/octet-stream",
     )
     for header, value in raw_response.get("headers", {}).items():
-        response.headers[str(header)] = str(value)
+        header, value = str(header), str(value)
+        if header.lower() not in _RAW_RESPONSE_ALLOWED_HEADERS or any(
+            char in value for char in "\r\n\x00"
+        ):
+            app.logger.debug(f"Dropping disallowed raw third-party response header `{header}`.")
+            continue
+        response.headers[header] = value
     return response
 
 
@@ -173,12 +265,22 @@ async def third_party_static(name: str, asset_path: str):
         return abort(404, description=_("Looks like that page doesn't exist... Strange..."))
     if request.method not in third_parties[name]["static"]["methods"]:
         return abort(405, description=_("Method not allowed."))
+    if not _is_safe_asset_path(asset_path):
+        return abort(404, description=_("Asset not found."))
+    if "guild_id" in third_parties[name]["static"]["context_ids"]:
+        return abort(400, description=_("Static pages cannot require a guild context."))
+    context_ids, _return_guild, early_response = await _check_third_party_page_access(
+        name, "static", login_redirect=False,
+    )
+    if early_response is not None:
+        return early_response
 
     try:
         result = await _call_third_party_page(
             method=request.method,
             name=name,
             page="static",
+            context_ids=context_ids,
             required_kwargs={"asset_path": asset_path},
         )
         if "raw_response" in result:
@@ -282,37 +384,11 @@ async def third_party(name: str, page: str = None, guild_id: str = None):
     if request.method not in third_parties[name][_page]["methods"]:
         return abort(405, description=_("Method not allowed."))
 
-    context_ids = {}
-    if "user_id" in third_parties[name][_page]["context_ids"]:
-        if current_user.is_authenticated:
-            context_ids["user_id"] = (
-                current_user.id
-            )  # int(get_user_id(app=app, req=request, ses=session))
-        else:
-            return redirect(make_login_url("login_blueprint.login", next_url=request.url))
-    if third_parties[name][_page]["is_owner"] and not current_user.is_owner:
-        return abort(403, description=_("You must be the owner of the bot to access this page."))
-    if "guild_id" in third_parties[name][_page]["context_ids"]:
-        try:
-            context_ids["guild_id"] = int(guild_id)
-        except (TypeError, ValueError):
-            return redirect(
-                make_login_url(
-                    "base_blueprint.dashboard",
-                    next_url=url_for(
-                        "third_parties_blueprint.third_party",
-                        name=name,
-                        page=page,
-                        guild_id="GUILD_ID",
-                        **request.args,
-                    ),
-                ),
-            )
-        return_guild = await get_guild(context_ids["guild_id"], for_third_parties=True)
-        if return_guild["guild"]["status"] == 1:
-            return return_guild["guild"]
-    else:
-        return_guild = {}
+    context_ids, return_guild, early_response = await _check_third_party_page_access(
+        name, _page, page=page, guild_id=guild_id,
+    )
+    if early_response is not None:
+        return early_response
 
     kwargs = request.args.copy()
     required_kwargs = {}
