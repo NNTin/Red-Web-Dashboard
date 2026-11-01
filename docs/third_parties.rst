@@ -177,11 +177,18 @@ Security and caching
   response cookies may retain the cog's ``Cache-Control: public`` header.
   All other third-party page and static responses are forced to
   ``Cache-Control: private, no-store``, overriding ``public`` and shared-cache
-  directives such as ``s-maxage``. Responses vary on ``Cookie``. Cookie-bearing
-  requests remain private even when the underlying asset is public, including
-  when Flask refreshes an existing session cookie after response processing.
+  directives such as ``s-maxage``. Responses vary on ``Cookie``. At the origin,
+  cookie-bearing requests remain private even when the underlying asset is
+  public, including when Flask refreshes an existing session cookie after
+  response processing.
   Configure proxies and CDNs to respect these headers; do not use rules that
   cache everything regardless of cookies or cache directives.
+  Some CDNs, including `Cloudflare
+  <https://developers.cloudflare.com/cache/concepts/cache-control/#other>`_,
+  ignore ``Vary: Cookie`` by default and can serve an already cached public
+  asset to a cookie-bearing request without contacting the origin. Configure
+  cache bypass for session cookies wherever a URL can vary by authentication.
+  Purge existing cached responses when changing a URL from public to protected.
 * **Declare access requirements.** Add ``user_id`` or ``user`` to a handler's
   signature for login, and ``is_owner=True`` for owner-only access. Static
   handlers enforce the page's login and owner requirements, returning HTTP 401
