@@ -2,7 +2,7 @@
 The base of the login process has been done by Neuro Assassin (https://github.com/Cog-Creators/Red-Dashboard)!
 """
 
-import datetime
+import datetime as dt
 import secrets
 
 import aiohttp
@@ -114,7 +114,9 @@ async def callback():
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     async with aiohttp.ClientSession() as aiohttp_session:
         async with aiohttp_session.post(
-            "https://discordapp.com/api/v9/oauth2/token", data=data, headers=headers,
+            "https://discordapp.com/api/v9/oauth2/token",
+            data=data,
+            headers=headers,
         ) as r:
             response = await r.json()
             try:
@@ -130,7 +132,8 @@ async def callback():
                 return redirect(url_for("login_blueprint.login", next=request.args.get("next")))
 
         async with aiohttp_session.get(
-            "https://discordapp.com/api/v9/users/@me", headers={"Authorization": f"Bearer {token}"},
+            "https://discordapp.com/api/v9/users/@me",
+            headers={"Authorization": f"Bearer {token}"},
         ) as r:
             new_data = await r.json()
             try:
@@ -145,7 +148,7 @@ async def callback():
                 login_user(
                     user=user,
                     remember=False,
-                    duration=datetime.timedelta(weeks=1),
+                    duration=dt.timedelta(weeks=1),
                 )
             except KeyError as e:
                 app.logger.error(f"Failed to obtain a user's profile.\n{new_data}", exc_info=e)

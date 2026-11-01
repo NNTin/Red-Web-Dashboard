@@ -2,9 +2,8 @@
 The base of the RPC management has been done by Neuro Assassin (https://github.com/Cog-Creators/Red-Dashboard)!
 """
 
-
 import asyncio
-import datetime
+import datetime as dt
 import threading
 
 from flask import Flask
@@ -20,7 +19,10 @@ class TaskManager:
         self.ignore_disconnect = False
 
     async def update_data_variables(
-        self, method: str, once: bool = True, only_bot_variables: bool = False,
+        self,
+        method: str,
+        once: bool = True,
+        only_bot_variables: bool = False,
     ) -> None:
         try:
             while True:
@@ -106,7 +108,8 @@ class TaskManager:
                     version = result["version"]
         except Exception as e:
             self.app.logger.exception(
-                "Background task `DASHBOARDRPC__CHECK_VERSION` died unexpectedly.", exc_info=e,
+                "Background task `DASHBOARDRPC__CHECK_VERSION` died unexpectedly.",
+                exc_info=e,
             )
 
     async def check_if_connected(self) -> None:
@@ -127,16 +130,16 @@ class TaskManager:
                 self.app.config["RPC_CONNECTED"]: bool = True
                 if last_state_disconnected:
                     self.app.logger.info("Reconnected to RPC Websocket.")
-                    self.app.config["LAST_RPC_EVENT"]: datetime.datetime = datetime.datetime.now(
-                        tz=datetime.UTC,
+                    self.app.config["LAST_RPC_EVENT"]: dt.datetime = dt.datetime.now(
+                        tz=dt.timezone.utc,
                     )
                     last_state_disconnected = False
             elif not last_state_disconnected:
                 self.app.logger.warning("Disconnected from RPC Websocket.")
                 self.app.config["RPC_CONNECTED"]: bool = False
                 last_state_disconnected = True
-                self.app.config["LAST_RPC_EVENT"]: datetime.datetime = datetime.datetime.now(
-                    tz=datetime.UTC,
+                self.app.config["LAST_RPC_EVENT"]: dt.datetime = dt.datetime.now(
+                    tz=dt.timezone.utc,
                 )
                 if self.app.ws:
                     self.app.ws.close()

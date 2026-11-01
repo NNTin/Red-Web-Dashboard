@@ -7,7 +7,7 @@ Copyright (c) 2020 - present Neuro Assassin (https://github.com/Cog-Creators/Red
 import typing  # isort:skip
 
 import base64
-import datetime
+import datetime as dt
 import logging
 import sys
 import threading
@@ -26,7 +26,7 @@ from .utils import (
     initialize_babel,
     register_blueprints,
     register_extensions,
-)  # NOQA
+)
 
 if typing.TYPE_CHECKING:
     from flask_bootstrap import Bootstrap
@@ -153,11 +153,12 @@ class FlaskApp(Flask):
         self.config["WEBSOCKET_PORT"]: int = self.rpc_port
         self.config["WEBSOCKET_INTERVAL"]: int = self.interval
         self.config["RPC_CONNECTED"]: bool = False
-        self.config["LAUNCH"]: datetime.datetime = datetime.datetime.now(tz=datetime.UTC)
-        self.config["LAST_RPC_EVENT"]: datetime.datetime = self.config["LAUNCH"]
+        self.config["LAUNCH"]: dt.datetime = dt.datetime.now(tz=dt.timezone.utc)
+        self.config["LAST_RPC_EVENT"]: dt.datetime = self.config["LAUNCH"]
         await self.task_manager.update_data_variables("DASHBOARDRPC__GET_DATA")
         await self.task_manager.update_data_variables(
-            "DASHBOARDRPC__GET_VARIABLES", only_bot_variables=True,
+            "DASHBOARDRPC__GET_VARIABLES",
+            only_bot_variables=True,
         )
         self.task_manager.start_tasks()
 
@@ -183,7 +184,9 @@ class FlaskApp(Flask):
         self.logger.info("Webserver started.")
         if self.cog is not None:
             self.server_thread: ServerThread = ServerThread(
-                app=self, host=self.host, port=self.port,
+                app=self,
+                host=self.host,
+                port=self.port,
             )
             self.server_thread.start()
         else:

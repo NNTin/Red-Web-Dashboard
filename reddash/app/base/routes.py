@@ -1,7 +1,7 @@
 import typing  # isort:skip
 
 import base64
-import datetime
+import datetime as dt
 from copy import deepcopy
 
 import wtforms
@@ -18,7 +18,7 @@ from flask import (
     request,
     session,
     url_for,
-)  # NOQA
+)
 from flask.helpers import send_from_directory
 from flask_babel import _
 from flask_login import current_user, login_required
@@ -52,7 +52,7 @@ async def set_color():
         resp.set_cookie(
             key="color",
             value=color,
-            expires=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=365),
+            expires=dt.datetime.now(tz=dt.timezone.utc) + dt.timedelta(days=365),
         )
     else:
         resp.delete_cookie("color")
@@ -70,7 +70,7 @@ async def set_background_theme():
         resp.set_cookie(
             key="background_theme",
             value=background_theme,
-            expires=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=365),
+            expires=dt.datetime.now(tz=dt.timezone.utc) + dt.timedelta(days=365),
         )
     else:
         resp.delete_cookie("background_theme")
@@ -88,7 +88,7 @@ async def set_sidenav_theme():
         resp.set_cookie(
             key="sidenav_theme",
             value=sidenav_theme,
-            expires=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=365),
+            expires=dt.datetime.now(tz=dt.timezone.utc) + dt.timedelta(days=365),
         )
     else:
         resp.delete_cookie("sidenav_theme")
@@ -227,12 +227,14 @@ async def get_guild(guild_id: int, for_third_parties: bool = False):
     guild = await get_result(app, requeststr)
     if guild["status"] == 1:
         return abort(404, description=_("Guild not found or missing access to it."))
-    guild["created_at"] = datetime.datetime.fromtimestamp(
-        guild["created_at"], tz=datetime.UTC,
+    guild["created_at"] = dt.datetime.fromtimestamp(
+        guild["created_at"],
+        tz=dt.timezone.utc,
     )
     if guild["joined_at"] is not None:
-        guild["joined_at"] = datetime.datetime.fromtimestamp(
-            guild["joined_at"], tz=datetime.UTC,
+        guild["joined_at"] = dt.datetime.fromtimestamp(
+            guild["joined_at"],
+            tz=dt.timezone.utc,
         )
 
     if current_user.id in app.variables["bot"]["owner_ids"]:
@@ -353,20 +355,25 @@ class GuildSettingsForm(FlaskForm):
         self.regional_format.default = guild["settings"]["regional_format"]
 
     bot_nickname: wtforms.StringField = wtforms.StringField(
-        _("Bot Nickname:"), validators=[wtforms.validators.Length(max=32)],
+        _("Bot Nickname:"),
+        validators=[wtforms.validators.Length(max=32)],
     )
     prefixes: wtforms.StringField = wtforms.StringField(
-        _("Prefixes:"), validators=[wtforms.validators.Optional(), PrefixesCheck()],
+        _("Prefixes:"),
+        validators=[wtforms.validators.Optional(), PrefixesCheck()],
     )
     admin_roles: wtforms.SelectMultipleField = wtforms.SelectMultipleField(
-        _("Admin Roles:"), choices=[],
+        _("Admin Roles:"),
+        choices=[],
     )
     mod_roles: wtforms.SelectMultipleField = wtforms.SelectMultipleField(
-        _("Mod Roles:"), choices=[],
+        _("Mod Roles:"),
+        choices=[],
     )
     ignored: wtforms.BooleanField = wtforms.BooleanField(_("Ignore commands in this guild."))
     disabled_commands: wtforms.SelectMultipleField = wtforms.SelectMultipleField(
-        _("Disabled Commands:"), choices=[],
+        _("Disabled Commands:"),
+        choices=[],
     )
     embeds: wtforms.BooleanField = wtforms.BooleanField(_("Use embeds in responses."))
     use_bot_color: wtforms.BooleanField = wtforms.BooleanField(_("Use bot set color in embeds."))
@@ -379,7 +386,8 @@ class GuildSettingsForm(FlaskForm):
         ],
     )
     locale: wtforms.StringField = wtforms.StringField(
-        _("Locale:"), validators=[wtforms.validators.InputRequired(), BabelCheck(check_reset=True)],
+        _("Locale:"),
+        validators=[wtforms.validators.InputRequired(), BabelCheck(check_reset=True)],
     )
     regional_format: wtforms.StringField = wtforms.StringField(
         _("Regional Format:"),
@@ -473,7 +481,9 @@ class CustomCommandForm(FlaskForm):
         ],
     )
     responses: wtforms.FieldList = wtforms.FieldList(
-        wtforms.FormField(CustomCommandResponseForm), _("Responses"), min_entries=1,
+        wtforms.FormField(CustomCommandResponseForm),
+        _("Responses"),
+        min_entries=1,
     )
 
 
@@ -741,10 +751,12 @@ class DiscordProfileForm(FlaskForm):
     avatar: FileField = FileField()
     avatar_choice: wtforms.HiddenField = wtforms.HiddenField(default="keep")
     username: wtforms.StringField = wtforms.StringField(
-        _("Username:"), validators=[wtforms.validators.Length(max=32)],
+        _("Username:"),
+        validators=[wtforms.validators.Length(max=32)],
     )
     description: MarkdownTextAreaField = MarkdownTextAreaField(
-        _("Description:"), validators=[wtforms.validators.Length(max=400)],
+        _("Description:"),
+        validators=[wtforms.validators.Length(max=400)],
     )
     submit: wtforms.SubmitField = wtforms.SubmitField(_("Save Modifications"))
 
@@ -788,7 +800,8 @@ class DashboardSettingsForm(FlaskForm):
         validators=[wtforms.validators.InputRequired()],
     )
     disabled_third_parties: wtforms.SelectMultipleField = wtforms.SelectMultipleField(
-        _("Disabled Third Parties:"), choices=[],
+        _("Disabled Third Parties:"),
+        choices=[],
     )
     submit: wtforms.SubmitField = wtforms.SubmitField(_("Save Modifications"))
 
@@ -832,7 +845,8 @@ class BotSettingsForm(FlaskForm):
         ]
         self.invite_perms.validators.append(
             wtforms.validators.NumberRange(
-                min=0, max=app.variables["constants"]["MAX_DISCORD_PERMISSIONS_VALUE"],
+                min=0,
+                max=app.variables["constants"]["MAX_DISCORD_PERMISSIONS_VALUE"],
             ),
         )
         self.invite_perms.default = settings["invite_perms"]
@@ -840,20 +854,25 @@ class BotSettingsForm(FlaskForm):
         self.regional_format.default = settings["regional_format"]
 
     prefixes: wtforms.StringField = wtforms.StringField(
-        _("Prefixes:"), validators=[wtforms.validators.InputRequired(), PrefixesCheck()],
+        _("Prefixes:"),
+        validators=[wtforms.validators.InputRequired(), PrefixesCheck()],
     )
     invoke_error_msg: wtforms.StringField = wtforms.StringField(
-        _("Invoke Error Message:"), validators=[wtforms.validators.Length(max=1000)],
+        _("Invoke Error Message:"),
+        validators=[wtforms.validators.Length(max=1000)],
     )
     disabled_commands: wtforms.SelectMultipleField = wtforms.SelectMultipleField(
-        _("Disabled Commands:"), choices=[],
+        _("Disabled Commands:"),
+        choices=[],
     )
     disabled_command_msg: wtforms.StringField = wtforms.StringField(_("Disabled Command Message"))
     description: wtforms.StringField = wtforms.StringField(
-        _("Description:"), validators=[wtforms.validators.Length(max=250)],
+        _("Description:"),
+        validators=[wtforms.validators.Length(max=250)],
     )
     custom_info: MarkdownTextAreaField = MarkdownTextAreaField(
-        _("Custom Info:"), validators=[wtforms.validators.Length(max=1024)],
+        _("Custom Info:"),
+        validators=[wtforms.validators.Length(max=1024)],
     )
     embeds: wtforms.BooleanField = wtforms.BooleanField(_("Use Embeds in commands responses."))
     color: wtforms.ColorField = wtforms.ColorField(_("Embeds Color:"))
@@ -872,7 +891,8 @@ class BotSettingsForm(FlaskForm):
         ],
     )
     locale: wtforms.StringField = wtforms.StringField(
-        _("Locale:"), validators=[wtforms.validators.InputRequired(), BabelCheck()],
+        _("Locale:"),
+        validators=[wtforms.validators.InputRequired(), BabelCheck()],
     )
     regional_format: wtforms.StringField = wtforms.StringField(
         _("Regional Format:"),
@@ -912,16 +932,17 @@ class CustomPagesForm(FlaskForm):
 @blueprint.route("/admin", methods=("GET", "POST"))
 @login_required
 async def admin(
-    page: typing.Literal["overview", "dashboard-settings", "bot-settings", "custom_pages"] | None = None,
+    page: typing.Literal["overview", "dashboard-settings", "bot-settings", "custom_pages"]
+    | None = None,
 ):
     if not current_user.is_authenticated or not current_user.is_owner:
         return abort(403, description=_("You're not a bot owner!"))
 
     uptime_str = humanize_timedelta(
-        timedelta=datetime.datetime.now(tz=datetime.UTC) - app.config["LAUNCH"],
+        timedelta=dt.datetime.now(tz=dt.timezone.utc) - app.config["LAUNCH"],
     )
     connection_str = humanize_timedelta(
-        timedelta=datetime.datetime.now(tz=datetime.UTC) - app.config["LAST_RPC_EVENT"],
+        timedelta=dt.datetime.now(tz=dt.timezone.utc) - app.config["LAST_RPC_EVENT"],
     )
 
     bot_profile_form: DiscordProfileForm = DiscordProfileForm()
