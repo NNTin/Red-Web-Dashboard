@@ -2,9 +2,8 @@
 The base of the login process has been done by Neuro Assassin (https://github.com/Cog-Creators/Red-Dashboard)!
 """
 
-import datetime
-import random
-import string
+import datetime as dt
+import secrets
 
 import aiohttp
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -13,7 +12,7 @@ from flask_babel import _
 from flask_login import current_user, login_fresh, login_user, logout_user
 
 from reddash.app.app import app
-from reddash.app.utils import User
+from reddash.app.utils import User, get_remote_addr
 
 from . import blueprint
 
@@ -52,7 +51,7 @@ async def discord_oauth():
             if app.host in ("0.0.0.0", "127.0.0.1")
             else f"http://{app.host}/callback"
         )
-    state = "".join(random.choice(string.ascii_uppercase + string.digits) for _ in range(15))
+    state = secrets.token_urlsafe(16)
     session["state"] = state
     session["next"] = request.args.get("next")
     return redirect(
@@ -115,7 +114,9 @@ async def callback():
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     async with aiohttp.ClientSession() as aiohttp_session:
         async with aiohttp_session.post(
-            "https://discordapp.com/api/v9/oauth2/token", data=data, headers=headers,
+            "https://discordapp.com/api/v9/oauth2/token",
+            data=data,
+            headers=headers,
         ) as r:
             response = await r.json()
             try:
@@ -131,7 +132,8 @@ async def callback():
                 return redirect(url_for("login_blueprint.login", next=request.args.get("next")))
 
         async with aiohttp_session.get(
-            "https://discordapp.com/api/v9/users/@me", headers={"Authorization": f"Bearer {token}"},
+            "https://discordapp.com/api/v9/users/@me",
+            headers={"Authorization": f"Bearer {token}"},
         ) as r:
             new_data = await r.json()
             try:
@@ -146,7 +148,7 @@ async def callback():
                 login_user(
                     user=user,
                     remember=False,
-                    duration=datetime.timedelta(weeks=1),
+                    duration=dt.timedelta(weeks=1),
                 )
             except KeyError as e:
                 app.logger.error(f"Failed to obtain a user's profile.\n{new_data}", exc_info=e)
@@ -180,7 +182,7 @@ async def logout():
 
 @blueprint.route("/blacklisted")
 async def blacklisted():
-    remote_addr = request.environ.get("HTTP_X_FORWARDED_FOR", request.remote_addr)
+    remote_addr = get_remote_addr()
     if remote_addr not in app.data["core"]["blacklisted_ips"]:
         return redirect(url_for("base_blueprint.index"))
     return render_template("errors/blacklisted.html")

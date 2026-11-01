@@ -1,4 +1,3 @@
-
 import base64
 
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -223,7 +222,7 @@ async def oauth_route(provider: str):
 @blueprint.route("/third-parties/<third_party>")
 @blueprint.route("/third-parties")
 @login_required
-async def third_parties(third_party: str = None):
+async def third_parties(third_party: str | None = None):
     return_third_parties = await get_third_parties()
 
     return render_template(
@@ -344,7 +343,7 @@ async def third_party_static(name: str, asset_path: str):
         "DELETE",
     ),
 )
-async def third_party(name: str, page: str = None, guild_id: str = None):
+async def third_party(name: str, page: str | None = None, guild_id: str | None = None):
     third_parties = app.variables["third_parties"]
     name = _resolve_third_party_name(name)
     if name is None:
@@ -424,11 +423,15 @@ async def third_party(name: str, page: str = None, guild_id: str = None):
                         **value,
                     )
                     result["web_content"]["source"] += "\n\n" + result["web_content"][key].to_html(
-                        key, render_template_string=False,
+                        key,
+                        render_template_string=False,
                     )
             if result["web_content"].get("standalone", False):
                 return render_template_string(
-                    name=name, page=page, **return_guild, **result["web_content"],
+                    name=name,
+                    page=page,
+                    **return_guild,
+                    **result["web_content"],
                 )
             return render_template(
                 "pages/third_parties/third_party.html",
@@ -463,6 +466,7 @@ async def third_party(name: str, page: str = None, guild_id: str = None):
         raise
     except Exception as e:
         app.logger.error(
-            f"Error in the page `{page or 'Main Page'}` of the third party `{name}`.", exc_info=e,
+            f"Error in the page `{page or 'Main Page'}` of the third party `{name}`.",
+            exc_info=e,
         )
         return abort(500, description=_("An error occurred while processing your request."))

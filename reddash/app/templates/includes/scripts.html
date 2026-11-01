@@ -24,7 +24,7 @@
         document.body.removeChild(textArea);
     }
 </script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/2.1.4/toastr.min.js"></script>
 <script>
     toastr.options = {
         "elements": document.querySelectorAll("select option"),
@@ -48,7 +48,8 @@
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
             {% for category, message in messages %}
-                toastr.{{ category }}("{{ message|replace('\n', ' ')|markdown|replace('<p>', '')|replace('</p>', '') }}");
+                {# `tojson` escapes the message for a JavaScript string, and the category is restricted to existing toastr methods. #}
+                toastr[{{ (category if category in ("success", "info", "warning", "danger", "error") else "info")|tojson }}]({{ message|replace('\n', ' ')|markdown|replace('<p>', '')|replace('</p>', '')|tojson }});
             {% endfor %}
         {% endif %}
     {% endwith %}
@@ -62,9 +63,12 @@
         });
     });
 </script>
-{{ moment.include_moment() }}
-{{ moment.locale(auto_detect=true) }}
-<script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+{{ moment.include_moment(version=moment_version, with_locales=False) }}
+{% if moment_locale != "en" %}
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/{{ moment_version }}/locale/{{ moment_locale }}.min.js"></script>
+{% endif %}
+{{ moment.locale(moment_locale) }}
+<script src="https://cdn.jsdelivr.net/npm/easymde@2.21.0/dist/easymde.min.js"></script>
 <script>
     function MarkdownField(element) {
         var additionalKwargs = {};
@@ -164,10 +168,14 @@
         input_element.style.display = "none";        
     });
 </script>
-<script src="https://npmcdn.com/flatpickr/dist/flatpickr.min.js"></script>
-<script src="https://npmcdn.com/flatpickr/dist/l10n/fr.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+{% if flatpickr_locale %}
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/{{ flatpickr_locale }}.js"></script>
+{% endif %}
 <script>
-    flatpickr.localize(flatpickr.l10ns.fr);
+    {% if flatpickr_locale %}
+        flatpickr.localize(flatpickr.l10ns[{{ flatpickr_locale|replace("-", "_")|tojson }}]);
+    {% endif %}
     document.querySelectorAll(".datepicker").forEach(element => {
         flatpickr(
             element,
@@ -188,7 +196,7 @@
         }
     });
 </script>
-<script src="https://cdn.jsdelivr.net/npm/choices.js/public/assets/scripts/choices.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/choices.js@11.2.4/public/assets/scripts/choices.min.js"></script>
 <script>
     document.querySelectorAll("select, input[type=text].select-choices").forEach(function(element) {
         let choicesOptions = {

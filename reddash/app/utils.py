@@ -1,12 +1,14 @@
 import typing  # isort:skip
 
 import base64
-import datetime
+import datetime as dt
+import ipaddress
 import json
 import os
 import time
 from copy import deepcopy
 from importlib import import_module
+from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse, urlunparse
 
 import bleach
@@ -15,11 +17,12 @@ import websocket
 from django.conf import settings
 from fernet import Fernet
 from flask import Flask, flash, g, redirect, render_template, request, session, url_for
+from flask.sessions import SecureCookieSessionInterface
 from flask_babel import Locale, _
 from flask_bootstrap import Bootstrap
 from flask_login import LoginManager, UserMixin, current_user
 from flask_login import login_url as make_login_url
-from flask_moment import Moment
+from flask_moment import Moment, default_moment_version
 from flask_sitemapper import Sitemapper
 from flask_talisman import Talisman
 from flask_wtf.csrf import CSRFProtect
@@ -56,6 +59,100 @@ WS_EXCEPTIONS = (
     AttributeError,  # If the connection is reset.
 )
 
+# Tags and attributes Markdown can produce. Everything else is stripped from the rendered HTML.
+MARKDOWN_ALLOWED_TAGS: frozenset[str] = frozenset(
+    {
+        "a",
+        "abbr",
+        "b",
+        "blockquote",
+        "br",
+        "code",
+        "del",
+        "em",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "i",
+        "img",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "s",
+        "strong",
+        "sub",
+        "sup",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    },
+)
+MARKDOWN_ALLOWED_ATTRIBUTES: dict[str, list[str]] = {
+    "a": ["href", "title"],
+    "abbr": ["title"],
+    "code": ["class"],
+    "img": ["src", "alt", "title"],
+    "td": ["align"],
+    "th": ["align"],
+}
+MARKDOWN_ALLOWED_PROTOCOLS: frozenset[str] = frozenset({"http", "https", "mailto"})
+
+
+# The locales of moment.js and flatpickr matching `app.config["LANGUAGES"]`, so that only the locale
+# of the page is loaded. moment.js uses the language, except for some regional locales.
+MOMENT_REGIONAL_LOCALES: frozenset[str] = frozenset({"ar-sa", "pt-br", "zh-cn", "zh-hk", "zh-tw"})
+# flatpickr uses the language, except for these ones (`None` if the locale doesn't exist).
+FLATPICKR_LOCALES: dict[str, str | None] = {
+    "en": None,
+    "af": None,
+    "ca": "cat",
+    "el": "gr",
+    "nb": "no",
+    "vi": "vn",
+    "zh-cn": "zh",
+    "zh-hk": "zh-tw",
+    "zh-tw": "zh-tw",
+}
+
+
+def is_ip(address: str | None, *properties: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(getattr(ip, property) for property in properties)
+
+
+def get_remote_addr() -> str | None:
+    # `X-Forwarded-For` can be set by anyone, so it's only trusted when the request comes from a reverse proxy running on the same machine. The last entry is the one added by that proxy.
+    remote_addr = request.remote_addr
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for and is_ip(remote_addr, "is_loopback"):
+        return forwarded_for.split(",")[-1].strip()
+    return remote_addr
+
+
+def https_available() -> bool:
+    # The redirect URI is the public URL of the dashboard, so HTTPS is only available if it uses it (reverse proxy with a certificate).
+    core = app.data["core"]
+    return (core["redirect_uri"] or "").startswith("https://") and not core[
+        "allow_unsecure_http_requests"
+    ]
+
+
+class SessionInterface(SecureCookieSessionInterface):
+    def get_cookie_secure(self, app: Flask) -> bool:
+        return https_available()
+
 
 class User(UserMixin):
     USERS: dict[str, "User"] = {}
@@ -77,7 +174,7 @@ class User(UserMixin):
         self.__class__.USERS[self.id] = self
 
     def get_id(self) -> str:
-        token = self.generate_token(action="login", expiration_timedelta=datetime.timedelta(days=1))
+        token = self.generate_token(action="login", expiration_timedelta=dt.timedelta(days=1))
         self.devices.append(token)
         try:
             self.devices.remove(session["_user_id"])
@@ -113,11 +210,13 @@ class User(UserMixin):
     def generate_token(
         self,
         action: str | None = None,
-        expiration_timedelta: datetime.timedelta = datetime.timedelta(minutes=15),
-        data: dict[str, typing.Any] = {},
+        expiration_timedelta: dt.timedelta = dt.timedelta(minutes=15),
+        data: dict[str, typing.Any] | None = None,
     ) -> str:
-        secret_key = app.config["SECRET_KEY"]
-        expiration_time = datetime.datetime.now(tz=datetime.UTC) + expiration_timedelta
+        if data is None:
+            data = {}
+        secret_key = app.jwt_secret_key
+        expiration_time = dt.datetime.now(tz=dt.timezone.utc) + expiration_timedelta
         payload = {
             "user_id": self.id,
             "action": action,
@@ -134,7 +233,7 @@ class User(UserMixin):
         unique: bool = True,
         return_data: bool = False,
     ) -> typing.Union["User", tuple["User", dict[str, typing.Any]]]:
-        secret_key = app.config["SECRET_KEY"]
+        secret_key = app.jwt_secret_key
         try:
             data = jwt.decode(token, secret_key, algorithms=["HS256"])
         except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
@@ -181,7 +280,7 @@ def register_extensions(_app: Flask) -> None:
         except jwt.ExpiredSignatureError:
             return None
         except jwt.InvalidTokenError:
-            remote_addr = request.environ.get("HTTP_X_FORWARDED_FOR", request.remote_addr)
+            remote_addr = get_remote_addr()
             if remote_addr in app.data["core"]["blacklisted_ips"]:
                 return None
             # app.data["core"]["blacklisted_ips"].append(remote_addr)
@@ -195,25 +294,21 @@ def register_extensions(_app: Flask) -> None:
     old_force_https = app.talisman._force_https
 
     def _force_https():
-        if request.remote_addr in ("127.0.0.1", "::1"):
+        if not https_available():
             return None
-        private_ip_ranges = [
-            ("10.0.0.0", "10.255.255.255"),
-            ("172.16.0.0", "172.31.255.255"),
-            ("192.168.0.0", "192.168.255.255"),
-        ]
-        if any(start <= request.remote_addr <= end for start, end in private_ip_ranges):
+        if is_ip(get_remote_addr(), "is_loopback", "is_private"):
             return None
         return old_force_https()
 
     app.talisman._force_https = _force_https
-    allow_unsecure_http_requests = app.data["core"]["allow_unsecure_http_requests"]
     app.talisman.init_app(
         app,
-        force_https=not allow_unsecure_http_requests,
-        session_cookie_secure=not allow_unsecure_http_requests,
-        content_security_policy=None,
+        force_https=True,  # The decision is made for each request in `_force_https`.
+        session_cookie_secure=False,  # Handled by `SessionInterface`.
+        # Scripts aren't restricted, as pages rely on inline scripts and third parties provide their own.
+        content_security_policy={"object-src": "'none'", "base-uri": "'self'"},
     )
+    app.session_interface = SessionInterface()
 
     app.config["WTF_CSRF_ENABLED"]: bool = True
     app.config["WTF_CSRF_SECRET_KEY"]: str = base64.urlsafe_b64decode(
@@ -290,7 +385,17 @@ def register_extensions(_app: Flask) -> None:
     @app.template_filter("markdown")
     def markdown_filter(text: str) -> Markup:
         text = bleach.clean(text, tags=[], strip=False)
-        return Markup(app.markdown.convert(text).replace("\n", ""))  # <br />
+        html = app.markdown.convert(text).replace("\n", "")  # <br />
+        # Markdown doesn't filter link targets, so `[x](javascript:...)` must be removed here.
+        return Markup(
+            bleach.clean(
+                html,
+                tags=MARKDOWN_ALLOWED_TAGS,
+                attributes=MARKDOWN_ALLOWED_ATTRIBUTES,
+                protocols=MARKDOWN_ALLOWED_PROTOCOLS,
+                strip=True,
+            ),
+        )
 
     @app.template_filter("highlight")
     def highlight_filter(code, language="python") -> Markup:
@@ -334,7 +439,7 @@ def register_blueprints(app: Flask) -> None:
         request.user_agent = get_user_agent(request)
         # if request.path not in ("/", "/login") and not request.path.startswith("/static") and not (request.path.startswith("/set") and request.path.count("/") == 1):
         #     return render_template("errors/404.html"), 404
-        remote_addr = request.environ.get("HTTP_X_FORWARDED_FOR", request.remote_addr)
+        remote_addr = get_remote_addr()
         if request.path.startswith(("/static", "/api/stream", "/blacklisted")):
             return None
         if remote_addr in app.data["core"]["blacklisted_ips"]:
@@ -370,7 +475,10 @@ def apply_themes(app: Flask) -> None:
                 theme_file = "{}/{}".format(themename, values.get("filename", ""))
                 if os.path.isfile(os.path.join(app.static_folder, theme_file)):
                     values["filename"] = theme_file
-            values["q"] = time.time()  # So Flask doesn't cache.
+            # The URL only changes with the file, so browsers can cache it until it's modified.
+            path = Path(app.static_folder) / values.get("filename", "")
+            if path.is_file():
+                values["q"] = int(path.stat().st_mtime)
         if request.args.get("debug_toolbar") in ("True", "true", "1", "t", "on"):
             values["debug_toolbar"] = "True"
         return url_for(endpoint, **values)
@@ -386,7 +494,8 @@ def add_constants(app: Flask) -> None:
         meta["color"] = request.cookies.get("color", meta["default_color"])
         meta["available_colors"]: list[str] = AVAILABLE_COLORS
         meta["background_theme"] = request.cookies.get(
-            "background_theme", meta["default_background_theme"],
+            "background_theme",
+            meta["default_background_theme"],
         )
         meta["sidenav_theme"] = request.cookies.get("sidenav_theme", meta["default_sidenav_theme"])
         return {"meta": meta}
@@ -472,7 +581,8 @@ def add_constants(app: Flask) -> None:
                 del query_params[kwarg]
         new_query_params = {k: v if isinstance(v, str) else v for k, v in query_params.items()}
         new_query_string = urlencode(new_query_params, doseq=True, quote_via=quote_plus).replace(
-            "amp%3B", "",
+            "amp%3B",
+            "",
         )
         updated_url_components = url_components._replace(query=new_query_string)
         if _anchor is not None:
@@ -537,17 +647,17 @@ def add_constants(app: Flask) -> None:
         variables["safelocales"] = json.dumps(app.config["LOCALE_DICT"])
         variables["selectedlocale"] = session.get("lang_code")
         variables["sidenav"] = process_sidenav()
-        uptime = datetime.datetime.fromtimestamp(app.variables["stats"]["uptime"])
-        utc_now = datetime.datetime.utcnow().replace(second=0, microsecond=0)
+        uptime = dt.datetime.fromtimestamp(app.variables["stats"]["uptime"])
+        utc_now = dt.datetime.utcnow().replace(second=0, microsecond=0)
         real_timedelta = utc_now - uptime
-        timedelta: datetime.timedelta = utc_now - uptime.replace(
-            hour=utc_now.hour if real_timedelta > datetime.timedelta(days=30) else uptime.hour,
-            minute=utc_now.minute if real_timedelta > datetime.timedelta(days=1) else uptime.minute,
+        timedelta: dt.timedelta = utc_now - uptime.replace(
+            hour=utc_now.hour if real_timedelta > dt.timedelta(days=30) else uptime.hour,
+            minute=utc_now.minute if real_timedelta > dt.timedelta(days=1) else uptime.minute,
             second=0,
             microsecond=0,
         )
         if timedelta.total_seconds() > 60 * 60 * 24 * 365:
-            timedelta = datetime.timedelta(days=timedelta.days // 30 * 30)
+            timedelta = dt.timedelta(days=timedelta.days // 30 * 30)
         variables["stats"]["uptime_timedelta"] = humanize_timedelta(timedelta=timedelta)
         variables.update(**process_meta_tags())
         return {
@@ -642,6 +752,19 @@ def initialize_babel(app: Flask) -> None:
 
     app.extensions["babel"].locale_selector = get_locale
 
+    @app.context_processor
+    def inject_locales() -> dict[str, str | None]:
+        language, __, territory = get_locale().lower().partition("_")
+        regional = f"{language}-{territory}"
+        return {
+            "moment_version": default_moment_version,
+            "moment_locale": regional if regional in MOMENT_REGIONAL_LOCALES else language,
+            "flatpickr_locale": FLATPICKR_LOCALES.get(
+                regional,
+                FLATPICKR_LOCALES.get(language, language),
+            ),
+        }
+
 
 def initialize_websocket(app: Flask) -> bool:
     with app.lock:
@@ -671,7 +794,10 @@ def check_for_disconnect(app: Flask, result: dict[str, typing.Any]) -> bool:
 
 
 async def get_result(
-    app: Flask, request: dict[str, typing.Any], *, retry: bool = True,
+    app: Flask,
+    request: dict[str, typing.Any],
+    *,
+    retry: bool = True,
 ) -> dict[str, typing.Any]:
     if app.cog is not None:
         from aiohttp_json_rpc.protocol import JsonRpcMsg, JsonRpcMsgTyp
@@ -730,7 +856,9 @@ def notify_owner_of_blacklist(app: Flask, ip: str) -> None:
 
 # This is taken from Red-DiscordBot's `chat_formatting.py` (https://github.com/Cog-Creators/Red-DiscordBot/blob/V3/develop/redbot/core/utils/chat_formatting.py#L521-L574).
 def humanize_timedelta(
-    *, timedelta: datetime.timedelta | None = None, seconds: int | None = None,
+    *,
+    timedelta: dt.timedelta | None = None,
+    seconds: int | None = None,
 ) -> str:
     """
     Get a locale aware human timedelta representation.
