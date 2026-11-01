@@ -32,6 +32,10 @@ Red-Web-Dashboard adds two endpoints: ``/third-party/<cog_name>/[page]?**[params
 Depending on the parameters provided by the cog creator, the code will deny requests if the used method is not one of the allowed ones (``HEAD``, ``GET``, ``OPTIONS``, ``POST``, ``PATCH``, and ``DELETE``). If ``user_id`` is a required parameter, the Dashboard will request the OAuth login of the current user. If ``guild_id`` is required, the current ``dashboard.html`` page will be displayed to allow the choice of a guild.
 ``user_id``, ``guild_id``, ``member_id``, ``role_id``, and ``channel_id`` are context variables, which should be integers. Currently, choice is not possible for members, roles, and channels, but these parameters could be provided manually by cogs in Discord. If parameters are required, the Dashboard will display an error in the browser.
 
+.. warning::
+
+    Only ``user_id`` comes from the OAuth authentication. ``member_id``, ``role_id`` and ``channel_id`` are read from the URL query parameters and can be freely chosen by the user: they designate *target* objects, never the authenticated user. Never use ``member`` to check the permissions of the user viewing the page: use ``user`` instead (see below).
+
 A web request will be sent to the local cog Dashboard, which will dispatch the data correctly and get a response.
 
 Types of Responses from Third Parties
@@ -79,7 +83,7 @@ Here are the parameters for the ``dashboard.rpc.thirdparties.dashboard_page`` de
 
 - ``hidden`` (``bool``): Determines whether the page is hidden in the third parties list. Defaults to False, or True if there are required kwargs.
 
-The ``DashboardRPC_ThirdParties.data_receive`` RPC method receives the data from Red-Web-Dashboard for the mentioned API endpoint. It checks the existence of the third party and the page. If the cog is no longer loaded, the request is refused with an error message. If a ``context_ids`` variable is provided (``user_id``, ``guild_id``, ``member_id``, ``role_id``, or ``channel_id``), the code checks if the bot has access to it and if the Discord objects actually exist. The parameters ``user``, ``guild``, ``member``, ``role``, and ``channel`` are then added.
+The ``DashboardRPC_ThirdParties.data_receive`` RPC method receives the data from Red-Web-Dashboard for the mentioned API endpoint. It checks the existence of the third party and the page. If the cog is no longer loaded, the request is refused with an error message. If a ``context_ids`` variable is provided (``user_id``, ``guild_id``, ``member_id``, ``role_id``, or ``channel_id``), the code checks if the bot has access to it and if the Discord objects actually exist. The parameters ``user``, ``guild``, ``member``, ``role``, and ``channel`` are then added. When the page requires both ``user`` and ``guild``, ``user`` is the authenticated user as a ``discord.Member`` of this guild, so permissions can be checked directly on it (e.g. ``user.guild_permissions``). The only exception is a bot owner who isn't in the guild: ``user`` is then a ``discord.User``.
 
 The arguments received from Red-Web-Dashboard (and passed to cogs) are ``method`` (``Literal["HEAD", "GET", "OPTIONS", "POST", "PATCH", "DELETE"]``), ``request_url`` (``str``), ``csrf_token`` (``typing.Tuple[str, str]``), ``wtf_csrf_secret_key`` (``bytes``), ``**context_ids``, ``**required_kwargs``, ``**optional_kwargs``, ``extra_kwargs`` (``typing.Dict[str, typing.Any]``), ``data`` (``typing.Dict[typing.Literal["form", "json"], ImmutableMultiDict[str, typing.Union[typing.Any, typing.List[typing.Any]]]]``), and ``lang_code`` (`str`). Cogs should use ``**kwargs`` last, as the user (or Flask) is free to add any parameters they wish to the pages in the URL.
 
@@ -190,7 +194,7 @@ In ``dashboard_integration.py``:
             }
 
         @dashboard_page(name="guild", description="Get basic details about a __guild__!")  # Create a page nammed "guild" for the third party. It will be available at the URL ``/dashboard/<guild_id>/third-party/MyCog/guild``.
-        async def guild_page(self, user: discord.User, guild: discord.Guild, **kwargs) -> typing.Dict[str, typing.Any]:  # The kwarg ``guild`` means that Red-Web-Dashboard will ask for the choice of a guild among those to which the user has access.
+        async def guild_page(self, user: typing.Union[discord.Member, discord.User], guild: discord.Guild, **kwargs) -> typing.Dict[str, typing.Any]:  # The kwarg ``guild`` means that Red-Web-Dashboard will ask for the choice of a guild among those to which the user has access. ``user`` is then the authenticated member of this guild (or a ``discord.User`` for a bot owner who isn't in it).
             return {
                 "status": 0,
                 "web_content": {  # Return a web content with the text variable ``title_content``.
