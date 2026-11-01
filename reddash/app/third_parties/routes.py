@@ -1,4 +1,5 @@
 import base64
+import binascii
 
 from django.utils.http import url_has_allowed_host_and_scheme
 from flask import (
@@ -28,7 +29,6 @@ from reddash.app.utils import get_result  # , get_user_id
 from . import blueprint
 
 # <---------- Third Parties ---------->
-
 
 _RAW_RESPONSE_ALLOWED_HEADERS = frozenset(
     header.lower()
@@ -108,8 +108,8 @@ async def _check_third_party_page_access(
 
 def _build_raw_response(raw_response):
     try:
-        body = base64.b64decode(raw_response["body_base64"])
-    except Exception:
+        body = base64.b64decode(raw_response["body_base64"], validate=True)
+    except (binascii.Error, KeyError, TypeError, ValueError):
         return abort(500, description=_("Invalid raw third-party response."))
 
     response = make_response(body, raw_response.get("status", 200))
@@ -125,6 +125,10 @@ def _build_raw_response(raw_response):
             app.logger.debug(f"Dropping disallowed raw third-party response header `{header}`.")
             continue
         response.headers[header] = value
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Raw documents (including HTML, SVG and XML) must never gain the
+    # Dashboard's origin privileges. This does not sandbox embedding pages.
+    response.headers["Content-Security-Policy"] = "sandbox"
     return response
 
 
