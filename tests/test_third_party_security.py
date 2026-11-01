@@ -5,6 +5,8 @@ Run with: python -m unittest discover -s tests -v
 
 import base64
 import unittest
+from unittest.mock import AsyncMock, patch
+from urllib.parse import quote
 
 from werkzeug.exceptions import InternalServerError
 
@@ -29,6 +31,36 @@ def raw_response(body=b"asset", content_type="text/javascript", headers=None):
         "content_type": content_type,
         "headers": headers or {},
     }
+
+
+class AssetPathSecurityTests(unittest.TestCase):
+    def test_unsafe_paths_never_reach_rpc(self):
+        for asset_path in (
+            "C:/Windows/win.ini",
+            "C:relative.txt",
+            "assets/icon.svg:payload",
+            "../secret",
+            "assets/../../secret",
+            "assets/./secret",
+            "assets//secret",
+            "\\\\server\\share\\secret",
+            "assets\\..\\secret",
+            "assets/secret\x00",
+            "assets/secret\n",
+        ):
+            with self.subTest(asset_path=asset_path), patch.object(
+                routes, "get_result", new_callable=AsyncMock,
+            ) as rpc:
+                response = app.test_client().get(
+                    "/third-party/Test/static/" + quote(asset_path, safe="/"),
+                )
+                self.assertEqual(response.status_code, 404)
+                rpc.assert_not_awaited()
+
+    def test_normal_asset_paths_are_allowed(self):
+        for asset_path in ("assets/index-a123.js", "fonts/main.woff2", "icons/icon 1.png"):
+            with self.subTest(asset_path=asset_path):
+                self.assertTrue(routes._is_safe_asset_path(asset_path))
 
 
 class RawResponseSecurityTests(unittest.TestCase):

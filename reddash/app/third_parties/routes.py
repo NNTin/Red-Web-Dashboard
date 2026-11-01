@@ -53,11 +53,14 @@ def _resolve_third_party_name(name: str) -> str | None:
 
 
 def _is_safe_asset_path(asset_path: str) -> bool:
-    # Werkzeug has already percent-decoded the path, so `%2e%2e` arrives here as `..`.
-    if not asset_path or "\\" in asset_path or "\x00" in asset_path or asset_path.startswith("/"):
-        return False
-    return all(part not in ("", ".", "..") for part in asset_path.split("/"))
-
+    # Flask has already URL-decoded the path. Reject Windows drives, UNC
+    # paths and alternate data streams as well as POSIX traversal.
+    return (
+        bool(asset_path)
+        and not any(char in asset_path for char in ("\\", ":"))
+        and not any(ord(char) < 32 or ord(char) == 127 for char in asset_path)
+        and all(part not in ("", ".", "..") for part in asset_path.split("/"))
+    )
 
 async def _check_third_party_page_access(
     name: str,
@@ -240,6 +243,8 @@ async def third_parties(third_party: str | None = None):
 
 @blueprint.route("/third-party/<name>/static/<path:asset_path>", methods=("GET", "HEAD"))
 async def third_party_static(name: str, asset_path: str):
+    if not _is_safe_asset_path(asset_path):
+        return abort(404)
     third_parties = app.variables["third_parties"]
     name = _resolve_third_party_name(name)
     if name is None:
